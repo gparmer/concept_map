@@ -59,9 +59,85 @@ impl ConceptMap {
         }
     }
 
+    fn graph(&self) -> Vec<u8> {
+        let mut output_bytes = Vec::new();
+        {
+            let mut writer = DotWriter::from(&mut output_bytes);
+            let mut digraph = writer.digraph();
+            let mut colors = HashMap::new();
+            let colormap = [
+                "cadetblue1",
+                "chocolate1",
+                "darkgoldenrod1",
+                "darkorchid1",
+                "deeppink",
+                "dodgerblue2",
+                "firebrick1",
+                "gray38",
+                "green3",
+                "navy",
+                "orchid",
+                "teal",
+                "violetred",
+                "yellow1",
+                "tomato1",
+            ];
+            let mut color_idx = 0;
+
+            digraph.node_attributes().set("penwidth", "2.5", false);
+            for c in &self.concepts {
+                if !colors.contains_key(&c.category) {
+                    assert_ne!(color_idx, colormap.len()); // don't support more than this many categories
+                    colors.insert(&c.category, &colormap[color_idx]);
+                    color_idx += 1;
+                }
+            }
+            for c in &self.concepts {
+                digraph.node_named(c.graph_name.to_string()).set(
+                    "color",
+                    &colors.get(&c.category).unwrap().to_string(),
+                    true,
+                );
+                // unwrap: added in previous loop
+            }
+            let summary_name = format!(
+                "\"Summary\nLecture {:.2} weeks\nLab {:.2} weeks\nHW {:.2} weeks\"",
+                self.total_weights[0], self.total_weights[1], self.total_weights[2]
+            );
+            digraph
+                .node_named(summary_name.to_string())
+                .set_shape(Shape::None)
+                .set_font_size(20.0);
+
+            for (cat, col) in &colors {
+                digraph
+                    .node_named(cat.to_string())
+                    .set_style(Style::Filled)
+                    .set_shape(Shape::Rectangle)
+                    .set("color", col, true);
+            }
+            self.dependency_order
+                .iter()
+                .map(|o| self.dependency_to_concept(o))
+                .for_each(|c| {
+                    for d in &c.dependencies {
+                        let dep_c = self.dependency_to_concept(d);
+
+                        digraph.edge(c.graph_name.to_string(), dep_c.graph_name.to_string());
+                    }
+                });
+        }
+        output_bytes
+    }
+
     fn dependency_to_concept(&self, n: &ConceptName) -> &Concept {
         let idx = *self.lookup.get(n).unwrap(); // we've already validated all entries
         &self.concepts[idx]
+    }
+
+    fn dependency_to_concept_mut(&mut self, n: &ConceptName) -> &mut Concept {
+        let idx = *self.lookup.get(n).unwrap(); // we've already validated all entries
+        &mut self.concepts[idx]
     }
 
     fn solve_dependency_transitive_closure(
@@ -98,79 +174,6 @@ impl ConceptMap {
         dep_closure.insert(n.to_string(), all);
     }
 
-    fn graph(&self) -> Vec<u8> {
-        let mut output_bytes = Vec::new();
-        {
-            let mut writer = DotWriter::from(&mut output_bytes);
-            let mut digraph = writer.digraph();
-            let mut colors = HashMap::new();
-            let colormap = [
-                "cadetblue1",
-                "chocolate1",
-                "darkgoldenrod1",
-                "darkorchid1",
-                "deeppink",
-                "dodgerblue2",
-                "firebrick1",
-                "gray38",
-                "green3",
-                "navy",
-                "orchid",
-                "teal",
-                "violetred",
-                "yellow1",
-                "tomato1",
-            ];
-            let mut color_idx = 0;
-
-            digraph
-                .node_attributes()
-                .set("penwidth", "2.5", false);
-            for c in &self.concepts {
-                if !colors.contains_key(&c.category) {
-                    assert_ne!(color_idx, colormap.len()); // don't support more than this many categories
-                    colors.insert(&c.category, &colormap[color_idx]);
-                    color_idx += 1;
-                }
-            }
-            for c in &self.concepts {
-                digraph.node_named(c.graph_name.to_string()).set(
-                    "color",
-                    &colors.get(&c.category).unwrap().to_string(),
-                    true,
-                );
-                // unwrap: added in previous loop
-            }
-            let summary_name = format!(
-                "\"Summary\nLecture {:.2} weeks\nLab {:.2} weeks\nHW {:.2} weeks\"",
-                self.total_weights[0], self.total_weights[1], self.total_weights[2]
-            );
-            digraph
-                .node_named(summary_name.to_string())
-                .set_shape(Shape::None)
-                .set_font_size(20.0);
-
-            for (cat, col) in &colors {
-                digraph
-                    .node_named(cat.to_string())
-		    .set_style(Style::Filled)
-                    .set_shape(Shape::Rectangle)
-                    .set("color", col, true);
-            }
-            self.dependency_order
-                .iter()
-                .map(|o| self.dependency_to_concept(o))
-                .for_each(|c| {
-                    for d in &c.dependencies {
-                        let dep_c = self.dependency_to_concept(d);
-
-                        digraph.edge(c.graph_name.to_string(), dep_c.graph_name.to_string());
-                    }
-                });
-        }
-        output_bytes
-    }
-
     fn solve_total_weights(&mut self) {
         for i in 0..3 {
             self.total_weights[i] = self.concepts.iter().map(|c| c.modes[i].weight).sum();
@@ -179,6 +182,8 @@ impl ConceptMap {
 
     fn solve(&mut self) -> String {
         let mut all_deps: HashMap<ConceptName, HashSet<ConceptName>> = HashMap::new();
+        // separate the solving for the weights from the
+        // data-structure to avoid borrow + modify issues
         let mut weights: HashMap<ConceptName, f64> = HashMap::new();
 
         self.solve_total_weights();
@@ -188,15 +193,57 @@ impl ConceptMap {
             weights.insert(c.concept.clone(), c.modes[0].weight);
         }
 
-        for c in &mut self.concepts {
+	for c in &mut self.concepts {
             let all = all_deps.get(&c.concept).unwrap(); // just inserted!
             c.modes[0].range.earliest_start = all
                 .iter()
                 .map(|d| weights.get(d).unwrap()) // added in previous loop
                 .fold(0.0, |p, n| p + n);
+        }
+
+	let mut starts = HashMap::new();
+        for i in 1..3 {
+	    // Go through the depended on concepts first. For each
+	    // start by setting its earliest start time to its mode -
+	    // 1, then go through all of our dependencies and see if
+	    // there are any later start times among this mode's
+	    // times. This assumes that this mode's times are always
+	    // higher (for a dependency) than their mode - 1 start
+	    // time. This is a property of each concept's start time's
+	    // initialization.
+	    for n in &self.dependency_order {
+                let c = self.dependency_to_concept(n);
+                let ds = all_deps.get(n).unwrap(); // assigned above!
+                // have to wait at least for the previous mode's instruction
+                let mut earliest = c.modes[i - 1].range.earliest_start + c.modes[i - 1].weight;
+
+                for dn in ds {
+                    let d = self.dependency_to_concept(dn);
+		    let start = d.modes[i].range.earliest_start + d.modes[i].weight;
+		    if start > earliest {
+			earliest = start;
+		    }
+                }
+
+		let mut ws = starts.get(&c.concept).unwrap_or(&[0.0, 0.0, 0.0]);
+		ws[i] = earliest;
+		starts.insert(&c.concept, ws.clone());
+            }
+        }
+
+	for i in 1..3 {
+	    for c in &mut self.concepts {
+		c.modes[i].range.earliest_start = starts.get(&c.concept).unwrap()[i];
+	    }
+	}
+
+        for c in &mut self.concepts {
             c.graph_name = format!(
-                "\"{}\nearliest: {:.2}\"",
-                c.concept, c.modes[0].range.earliest_start
+                "\"{}\nEarliest lecture: {:.2}\nEarliest lab: {:.2}\nEarliest HW: {:.2}\"",
+                c.concept,
+                c.modes[0].range.earliest_start,
+                c.modes[1].range.earliest_start,
+                c.modes[2].range.earliest_start
             );
         }
 
