@@ -185,12 +185,14 @@ impl ConceptMap {
         // separate the solving for the weights from the
         // data-structure to avoid borrow + modify issues
         let mut weights: HashMap<ConceptName, f64> = HashMap::new();
+	let mut starts: HashMap<ConceptName, [f64; 3]> = HashMap::new();
 
         self.solve_total_weights();
 
         for c in &self.concepts {
             self.solve_dependency_transitive_closure(&mut all_deps, &c.concept);
             weights.insert(c.concept.clone(), c.modes[0].weight);
+	    starts.insert(c.concept.clone(), [0.0, 0.0, 0.0]);
         }
 
 	for c in &mut self.concepts {
@@ -201,7 +203,6 @@ impl ConceptMap {
                 .fold(0.0, |p, n| p + n);
         }
 
-	let mut starts = HashMap::new();
         for i in 1..3 {
 	    // Go through the depended on concepts first. For each
 	    // start by setting its earliest start time to its mode -
@@ -225,15 +226,15 @@ impl ConceptMap {
 		    }
                 }
 
-		let mut ws = starts.get(&c.concept).unwrap_or(&[0.0, 0.0, 0.0]);
+
+		let ws = starts.get_mut(&c.concept).unwrap();
 		ws[i] = earliest;
-		starts.insert(&c.concept, ws.clone());
             }
         }
 
 	for i in 1..3 {
-	    for c in &mut self.concepts {
-		c.modes[i].range.earliest_start = starts.get(&c.concept).unwrap()[i];
+	    for (cn, ws) in &starts {
+		self.dependency_to_concept_mut(cn).modes[i].range.earliest_start = ws[i];
 	    }
 	}
 
